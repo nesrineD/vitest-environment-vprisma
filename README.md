@@ -34,6 +34,117 @@ export default defineConfig({
 }
 ```
 
+## How It Works
+
+### Concept
+
+`vitest-environment-vprisma` provides a custom Vitest environment that ensures **database test isolation** through automatic transaction management. The key concept is simple: each test runs inside its own database transaction that is automatically rolled back when the test completes, leaving the database in a clean state for the next test.
+
+This approach eliminates common problems in database testing:
+- **No test interference**: Tests can't accidentally affect each other through shared database state
+- **No manual cleanup**: You don't need to manually delete test data or reset the database between tests
+- **Fast execution**: Rollbacks are much faster than truncating tables or recreating databases
+- **Parallel-safe foundation**: Each test operates in isolation, providing a foundation for safe parallel test execution
+
+### Transaction-Based Isolation
+
+The library uses the following mechanism to ensure isolation:
+
+#### 1. Environment Setup
+
+When Vitest starts, `vitest-environment-vprisma` creates a custom environment that:
+- Wraps your chosen base environment (node, jsdom, happy-dom, or edge-runtime)
+- Initializes a `PrismaEnvironmentDelegate` from `@quramy/jest-prisma-core`
+- Creates a wrapped Prisma client (`vPrisma.client`) that intercepts all database operations
+
+#### 2. Test Lifecycle Hooks
+
+The `vitest-environment-vprisma/setup` file registers global hooks that manage the transaction lifecycle:
+
+```typescript
+beforeEach(() => {
+  // Signals: "test_start" + "test_fn_start"
+  // Action: BEGIN TRANSACTION
+});
+
+afterEach(() => {
+  // Signals: "test_done" + "test_fn_success"  
+  // Action: ROLLBACK TRANSACTION (unless disableRollback is true)
+});
+```
+
+#### 3. Transaction Wrapping
+
+When you use `vPrisma.client` in your tests, all database operations are automatically executed within the active transaction:
+
+```typescript
+test("Add user", async () => {
+  // ← Transaction begins (beforeEach hook)
+  
+  const user = await prisma.user.create({ data: { ... } });
+  // ↑ Executes: INSERT within transaction
+  
+  const count = await prisma.user.count();
+  // ↑ Executes: SELECT within same transaction
+  
+  expect(count).toBe(1);
+  
+  // → Transaction rolls back (afterEach hook)
+  // All changes are discarded
+});
+
+test("Count users", async () => {
+  // ← New transaction begins
+  
+  const count = await prisma.user.count();
+  expect(count).toBe(0);  // ✓ Previous test's data is gone
+  
+  // → Transaction rolls back
+});
+```
+
+#### 4. Isolation Guarantees
+
+Each test sees:
+- ✅ Its own writes (INSERT, UPDATE, DELETE operations)
+- ✅ Pre-existing data committed before tests started
+- ❌ No uncommitted changes from other tests
+- ❌ No data written by previous tests (due to rollback)
+
+This creates a clean, predictable environment where:
+- Tests can run in any order
+- Tests can be run individually or as a suite
+- Database state is consistent at the start of every test
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│ Vitest Test Runner                                  │
+└─────────────────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────────────┐
+│ vitest-environment-vprisma                          │
+│  • Custom environment wrapper                       │
+│  • Manages test lifecycle                           │
+└─────────────────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────────────┐
+│ PrismaEnvironmentDelegate                           │
+│  (@quramy/jest-prisma-core)                        │
+│  • Intercepts Prisma client operations              │
+│  • Wraps queries in transactions                    │
+│  • Manages transaction lifecycle                    │
+└─────────────────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────────────┐
+│ Database                                            │
+│  • PostgreSQL / MySQL / SQLite / etc.              │
+│  • Each test = one transaction                      │
+│  • Rollback after test completion                   │
+└─────────────────────────────────────────────────────┘
+```
+
 ## How to use
 
 If you are using an instance of `PrismaClient` in your test file to issue queries, use `vPrisma.client` instead. If setup is correct, it will be provided as a global object.

@@ -78,6 +78,8 @@ afterEach(() => {
 When you use `vPrisma.client` in your tests, all database operations are automatically executed within the active transaction:
 
 ```typescript
+const prisma = vPrisma.client;
+
 test("Add user", async () => {
   // ← Transaction begins (beforeEach hook)
   
